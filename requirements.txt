@@ -1,5 +1,4 @@
 fastapi
 uvicorn[standard]
-playwright
-beautifulsoup4
-playwright-stealth
+selenium
+webdriver-manager
