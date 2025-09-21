@@ -5,25 +5,50 @@ from playwright_stealth import stealth_sync
 from typing import Optional, List, Dict, Any
 
 
-def _extract_problem_data(page: Page, table_id: str) -> List[Dict[str, Any]]:
-    """Helper function to extract problem data from a table."""
+def _extract_problem_data(page: Page, header_text: str) -> List[Dict[str, Any]]:
+    """Helper function to extract problem data from a table identified by its header text."""
     problems = []
-    table = page.query_selector(f"#{table_id}")
-    if not table:
+    # This locator finds the header row and then selects all subsequent sibling rows (the data rows).
+    # This is highly specific and robust against the nested table layout.
+    data_rows_locator = page.locator(f"tr:has(th:text-matches('^{header_text}$', 'i')) ~ tr")
+
+    if data_rows_locator.count() == 0:
         return []
 
-    rows = table.query_selector_all("tbody tr")
+    rows = data_rows_locator.all()
     for row in rows:
-        cols = row.query_selector_all("td")
-        if len(cols) >= 2:
-            problem_name = cols[0].inner_text().strip()
-            # The count can have commas, so we remove them before converting to int
-            count = int(cols[1].inner_text().strip().replace(",", ""))
+        cols = row.locator("td").all()
+        # A valid problem row has 3 columns: Problem Name, MDR Count, Event Count
+        if len(cols) >= 3: 
+            # The problem name and link are inside the <a> tag of the first column.
+            link_element = cols[0].locator("a").first
             
-            maude_link_element = cols[0].query_selector("a")
-            maude_link = maude_link_element.get_attribute("href") if maude_link_element else None
+            if link_element.count() > 0:
+                problem_name = link_element.inner_text().strip()
+                maude_link = link_element.get_attribute("href")
+            else:
+                # Handle cases where there might not be a link
+                problem_name = cols[0].inner_text().strip()
+                maude_link = None
+            
+            # The MDR count is in the second column (index 1).
+            mdr_count_text = cols[1].inner_text().strip().replace(",", "")
+            mdr_count = int(mdr_count_text) if mdr_count_text.isdigit() else None
 
-            problems.append({"problem_name": problem_name, "count": count, "maude_link": maude_link})
+            # The Event count is in the third column (index 2).
+            event_count_text = cols[2].inner_text().strip().replace(",", "")
+            event_count = int(event_count_text) if event_count_text.isdigit() else None
+
+            # The MAUDE links are relative, so we construct the full URL.
+            if maude_link and maude_link.startswith("../"):
+                maude_link = "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/" + maude_link.lstrip("../")
+
+            problems.append({
+                "problem_name": problem_name,
+                "mdr_count": mdr_count,
+                "event_count": event_count,
+                "maude_link": maude_link,
+            })
     return problems
 
 def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min_year: int = 2020):
@@ -33,6 +58,7 @@ def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min
     print("Starting scraper...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         page = browser.new_page(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
         )
@@ -43,6 +69,9 @@ def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min
         try:
             # Navigate to the search page with an increased timeout
             page.goto("https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfTPLC/tplc.cfm", timeout=60000)
+            # Using wait_until="commit" can help bypass anti-bot systems that block
+            # based on full page load characteristics in headless mode.
+            page.goto("https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfTPLC/tplc.cfm", timeout=60000, wait_until="commit")
             print("Navigated to search page.")
 
             try:
@@ -69,7 +98,10 @@ def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min
                 page.select_option("select[name=min_report_year]", str(min_year))
 
             # Click the search button
-            page.click("input[name=search]")
+            # Using force=True makes the click more reliable in headed mode,
+            # as it doesn't require the element to be fully stable, which can
+            # be an issue if the window loses focus.
+            page.click("input[name=search]", force=True)
 
             # Wait for the results to load by waiting for the next page's content
             print("Waiting for search results...")
@@ -133,15 +165,16 @@ def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min
                 device_name_locator = page.locator("th:text-matches('^Device$') + td")
                 device_name_on_page = device_name_locator.inner_text().strip() if device_name_locator.count() > 0 else "Unknown Device Name"
 
-                # device_problems = _extract_problem_data(page, "dataTableDevice")
-                # patient_problems = _extract_problem_data(page, "dataTablePatient")
+                device_problems = _extract_problem_data(page, "Device Problems")
+                patient_problems = _extract_problem_data(page, "Patient Problems")
 
-                scraped_data.append({
-                    "device_name": device_name_on_page,
-                    # "detail_page_link": link,
-                    # "device_problems": device_problems,
-                    # "patient_problems": patient_problems
-                })
+                # Only include the device in the results if it has at least one problem listed.
+                if device_problems or patient_problems:
+                    scraped_data.append({
+                        "device_name": device_name_on_page,
+                        "device_problems": device_problems,
+                        "patient_problems": patient_problems
+                    })
 
             return {"status": "success", "data": scraped_data}
 
@@ -151,5 +184,8 @@ def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min
 
 if __name__ == '__main__':
     # Example usage for testing the scraper directly
+    #results = scrape_fda_website("syringe","EID")
+    # results = scrape_fda_website("syringe","DXT")
+    #results = scrape_fda_website("syringe","DQF")
     results = scrape_fda_website("syringe")
     print(results)
