@@ -49,7 +49,7 @@ def _extract_problem_data(driver: webdriver.Chrome, header_text: str) -> List[Di
     return problems
 
 
-def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min_year: int = 2020):
+def scrape_fda_website(device_name: str, product_code: Optional[str] = None, since: int = 2020):
     """
     Main function to scrape the FDA website using Selenium.
     """
@@ -92,14 +92,18 @@ def scrape_fda_website(device_name: str, product_code: Optional[str] = None, min
         if product_code:
             driver.find_element(By.NAME, "productcode").send_keys(product_code)
 
-        if min_year is not None and min_year != 2020:
-            Select(driver.find_element(By.NAME, "min_report_year")).select_by_value(str(min_year))
+        if since is not None:
+            Select(driver.find_element(By.NAME, "min_report_year")).select_by_value(str(since))
 
         driver.find_element(By.NAME, "search").click()
 
         # --- Collect device detail links ---
         print("Waiting for search results...")
-        wait.until(EC.presence_of_element_located((By.XPATH, "//th[contains(., 'Device Name')]")))
+        try:
+            wait.until(EC.presence_of_element_located((By.XPATH, "//th[contains(., 'Device Name')]")))
+        except TimeoutException:
+            print("No results found for the given criteria.")
+            return {"status": "success", "message": "No results found for the given criteria.", "data": []}
 
         all_links = []
         print("Collecting device links...")
