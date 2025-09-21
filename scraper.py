@@ -16,7 +16,7 @@ def _extract_problem_data(driver: webdriver.Chrome, header_text: str) -> List[Di
     problems = []
     try:
         # Find the table by locating its specific header text.
-        table = driver.find_element(By.XPATH, f"//th[contains(., '{header_text}')]/ancestor::table[1]")
+        table = driver.find_element(By.XPATH, f"//th[normalize-space()='{header_text}']/ancestor::table[1]")
         # Find all data rows within that specific table.
         rows = table.find_elements(By.XPATH, ".//tbody/tr[td]")
 
